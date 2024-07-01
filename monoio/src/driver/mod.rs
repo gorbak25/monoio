@@ -91,7 +91,10 @@ scoped_thread_local!(pub(crate) static CURRENT: Inner);
 #[derive(Clone)]
 pub(crate) enum Inner {
     #[cfg(all(target_os = "linux", feature = "iouring"))]
-    Uring(std::rc::Rc<std::cell::UnsafeCell<UringInner>>),
+    Uring64_16(std::rc::Rc<std::cell::UnsafeCell<UringInner<io_uring::squeue::Entry, io_uring::cqueue::Entry>>>),
+    Uring128_16(std::rc::Rc<std::cell::UnsafeCell<UringInner<io_uring::squeue::Entry128, io_uring::cqueue::Entry>>>),
+    Uring64_32(std::rc::Rc<std::cell::UnsafeCell<UringInner<io_uring::squeue::Entry, io_uring::cqueue::Entry32>>>),
+    Uring128_32(std::rc::Rc<std::cell::UnsafeCell<UringInner<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>>>),
     #[cfg(feature = "legacy")]
     Legacy(std::rc::Rc<std::cell::UnsafeCell<LegacyInner>>),
 }
@@ -100,7 +103,10 @@ impl Inner {
     fn submit_with<T: OpAble>(&self, data: T) -> io::Result<Op<T>> {
         match self {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            Inner::Uring(this) => UringInner::submit_with_data(this, data),
+            Inner::Uring64_16(this) => UringInner::submit_with_data(this, data),
+            Inner::Uring128_16(this) => UringInner::submit_with_data(this, data),
+            Inner::Uring64_32(this) => UringInner::submit_with_data(this, data),
+            Inner::Uring128_32(this) => UringInner::submit_with_data(this, data),
             #[cfg(feature = "legacy")]
             Inner::Legacy(this) => LegacyInner::submit_with_data(this, data),
             #[cfg(all(
@@ -122,7 +128,10 @@ impl Inner {
     ) -> Poll<CompletionMeta> {
         match self {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            Inner::Uring(this) => UringInner::poll_op(this, index, cx),
+            Inner::Uring64_16(this) => UringInner::poll_op(this, index, cx),
+            Inner::Uring128_16(this) => UringInner::poll_op(this, index, cx),
+            Inner::Uring64_32(this) => UringInner::poll_op(this, index, cx),
+            Inner::Uring128_32(this) => UringInner::poll_op(this, index, cx),
             #[cfg(feature = "legacy")]
             Inner::Legacy(this) => LegacyInner::poll_op::<T>(this, data, cx),
             #[cfg(all(
@@ -143,7 +152,10 @@ impl Inner {
     ) -> Poll<CompletionMeta> {
         match self {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            Inner::Uring(this) => UringInner::poll_legacy_op(this, data, cx),
+            Inner::Uring64_16(this) => UringInner::poll_legacy_op(this, data, cx),
+            Inner::Uring128_16(this) => UringInner::poll_legacy_op(this, data, cx),
+            Inner::Uring64_32(this) => UringInner::poll_legacy_op(this, data, cx),
+            Inner::Uring128_32(this) => UringInner::poll_legacy_op(this, data, cx),
             #[cfg(feature = "legacy")]
             Inner::Legacy(this) => LegacyInner::poll_op::<T>(this, data, cx),
             #[cfg(all(
@@ -160,7 +172,10 @@ impl Inner {
     fn drop_op<T: 'static>(&self, index: usize, data: &mut Option<T>) {
         match self {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            Inner::Uring(this) => UringInner::drop_op(this, index, data),
+            Inner::Uring64_16(this) => UringInner::drop_op(this, index, data),
+            Inner::Uring128_16(this) => UringInner::drop_op(this, index, data),
+            Inner::Uring64_32(this) => UringInner::drop_op(this, index, data),
+            Inner::Uring128_32(this) => UringInner::drop_op(this, index, data),
             #[cfg(feature = "legacy")]
             Inner::Legacy(_) => {}
             #[cfg(all(
@@ -177,7 +192,10 @@ impl Inner {
     pub(super) unsafe fn cancel_op(&self, op_canceller: &op::OpCanceller) {
         match self {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            Inner::Uring(this) => UringInner::cancel_op(this, op_canceller.index),
+            Inner::Uring64_16(this) => UringInner::cancel_op(this, op_canceller.index),
+            Inner::Uring128_16(this) => UringInner::cancel_op(this, op_canceller.index),
+            Inner::Uring64_32(this) => UringInner::cancel_op(this, op_canceller.index),
+            Inner::Uring128_32(this) => UringInner::cancel_op(this, op_canceller.index),
             #[cfg(feature = "legacy")]
             Inner::Legacy(this) => {
                 if let Some(direction) = op_canceller.direction {
@@ -260,7 +278,10 @@ impl UnparkHandle {
     pub(crate) fn current() -> Self {
         CURRENT.with(|inner| match inner {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            Inner::Uring(this) => UringInner::unpark(this).into(),
+            Inner::Uring64_16(this) => UringInner::unpark(this).into(),
+            Inner::Uring128_16(this) => UringInner::unpark(this).into(),
+            Inner::Uring64_32(this) => UringInner::unpark(this).into(),
+            Inner::Uring128_32(this) => UringInner::unpark(this).into(),
             #[cfg(feature = "legacy")]
             Inner::Legacy(this) => LegacyInner::unpark(this).into(),
         })

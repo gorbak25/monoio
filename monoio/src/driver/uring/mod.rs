@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use io_uring::{cqueue, opcode, types::Timespec, IoUring};
+use io_uring::{cqueue, opcode, squeue::EntryMarker, types::Timespec, IoUring};
 use lifecycle::Lifecycle;
 
 use super::{
@@ -41,8 +41,11 @@ pub(crate) const POLLER_USERDATA: u64 = u64::MAX - 3;
 pub(crate) const MIN_REVERSED_USERDATA: u64 = u64::MAX - 3;
 
 /// Driver with uring.
-pub struct IoUringDriver {
-    inner: Rc<UnsafeCell<UringInner>>,
+pub struct IoUringDriver<
+    S: io_uring::squeue::EntryMarker = io_uring::squeue::Entry,
+    C: io_uring::cqueue::EntryMarker = io_uring::cqueue::Entry,
+> {
+    inner: Rc<UnsafeCell<UringInner<S, C>>>,
 
     // Used as timeout buffer
     timespec: *mut Timespec,
@@ -56,7 +59,52 @@ pub struct IoUringDriver {
     thread_id: usize,
 }
 
-pub(crate) struct UringInner {
+pub(crate) trait IntoInnerContext<
+    S: io_uring::squeue::EntryMarker,
+    C: io_uring::cqueue::EntryMarker,
+>
+{
+    fn get_context(t: &Rc<UnsafeCell<UringInner<S, C>>>) -> Inner;
+}
+
+impl IntoInnerContext<io_uring::squeue::Entry, io_uring::cqueue::Entry>
+    for IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry>
+{
+    fn get_context(
+        t: &Rc<UnsafeCell<UringInner<io_uring::squeue::Entry, io_uring::cqueue::Entry>>>,
+    ) -> Inner {
+        Inner::Uring64_16(t.clone())
+    }
+}
+impl IntoInnerContext<io_uring::squeue::Entry128, io_uring::cqueue::Entry>
+    for IoUringDriver<io_uring::squeue::Entry128, io_uring::cqueue::Entry>
+{
+    fn get_context(
+        t: &Rc<UnsafeCell<UringInner<io_uring::squeue::Entry128, io_uring::cqueue::Entry>>>,
+    ) -> Inner {
+        Inner::Uring128_16(t.clone())
+    }
+}
+impl IntoInnerContext<io_uring::squeue::Entry, io_uring::cqueue::Entry32>
+    for IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry32>
+{
+    fn get_context(
+        t: &Rc<UnsafeCell<UringInner<io_uring::squeue::Entry, io_uring::cqueue::Entry32>>>,
+    ) -> Inner {
+        Inner::Uring64_32(t.clone())
+    }
+}
+impl IntoInnerContext<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>
+    for IoUringDriver<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>
+{
+    fn get_context(
+        t: &Rc<UnsafeCell<UringInner<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>>>,
+    ) -> Inner {
+        Inner::Uring128_32(t.clone())
+    }
+}
+
+pub(crate) struct UringInner<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> {
     /// In-flight operations
     ops: Ops,
 
@@ -66,7 +114,7 @@ pub(crate) struct UringInner {
     poller_installed: bool,
 
     /// IoUring bindings
-    uring: ManuallyDrop<IoUring>,
+    uring: ManuallyDrop<IoUring<S, C>>,
 
     /// Shared waker
     #[cfg(feature = "sync")]
@@ -90,18 +138,21 @@ struct Ops {
     slab: Slab<Lifecycle>,
 }
 
-impl IoUringDriver {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> IoUringDriver<S, C>
+where
+    IoUringDriver<S, C>: IntoInnerContext<S, C>,
+{
     const DEFAULT_ENTRIES: u32 = 1024;
 
-    pub(crate) fn new(b: &io_uring::Builder) -> io::Result<IoUringDriver> {
+    pub(crate) fn new(b: &io_uring::Builder<S, C>) -> io::Result<IoUringDriver<S, C>> {
         Self::new_with_entries(b, Self::DEFAULT_ENTRIES)
     }
 
     #[cfg(not(feature = "sync"))]
     pub(crate) fn new_with_entries(
-        urb: &io_uring::Builder,
+        urb: &io_uring::Builder<S, C>,
         entries: u32,
-    ) -> io::Result<IoUringDriver> {
+    ) -> io::Result<IoUringDriver<S, C>> {
         let uring = ManuallyDrop::new(urb.build(entries)?);
 
         let inner = Rc::new(UnsafeCell::new(UringInner {
@@ -122,9 +173,9 @@ impl IoUringDriver {
 
     #[cfg(feature = "sync")]
     pub(crate) fn new_with_entries(
-        urb: &io_uring::Builder,
+        urb: &io_uring::Builder<S, C>,
         entries: u32,
-    ) -> io::Result<IoUringDriver> {
+    ) -> io::Result<IoUringDriver<S, C>> {
         let uring = ManuallyDrop::new(urb.build(entries)?);
 
         // Create eventfd and register it to the ring.
@@ -172,7 +223,7 @@ impl IoUringDriver {
     }
 
     // Flush to make enough space
-    fn flush_space(inner: &mut UringInner, need: usize) -> io::Result<()> {
+    fn flush_space(inner: &mut UringInner<S, C>, need: usize) -> io::Result<()> {
         let sq = inner.uring.submission();
         debug_assert!(sq.capacity() >= need);
         if sq.len() + need > sq.capacity() {
@@ -183,28 +234,28 @@ impl IoUringDriver {
     }
 
     #[cfg(feature = "sync")]
-    fn install_eventfd(&self, inner: &mut UringInner, fd: RawFd) {
+    fn install_eventfd(&self, inner: &mut UringInner<S, C>, fd: RawFd) {
         let entry = opcode::Read::new(io_uring::types::Fd(fd), self.eventfd_read_dst, 8)
             .build()
             .user_data(EVENTFD_USERDATA);
 
         let mut sq = inner.uring.submission();
-        let _ = unsafe { sq.push(&entry) };
+        let _ = unsafe { sq.push(&entry.into()) };
         inner.eventfd_installed = true;
     }
 
     #[cfg(feature = "poll-io")]
-    fn install_poller(&self, inner: &mut UringInner, fd: RawFd) {
+    fn install_poller(&self, inner: &mut UringInner<S, C>, fd: RawFd) {
         let entry = opcode::PollAdd::new(io_uring::types::Fd(fd), libc::POLLIN as _)
             .build()
             .user_data(POLLER_USERDATA);
 
         let mut sq = inner.uring.submission();
-        let _ = unsafe { sq.push(&entry) };
+        let _ = unsafe { sq.push(&entry.into()) };
         inner.poller_installed = true;
     }
 
-    fn install_timeout(&self, inner: &mut UringInner, duration: Duration) {
+    fn install_timeout(&self, inner: &mut UringInner<S, C>, duration: Duration) {
         let timespec = timespec(duration);
         unsafe {
             std::ptr::replace(self.timespec, timespec);
@@ -214,7 +265,7 @@ impl IoUringDriver {
             .user_data(TIMEOUT_USERDATA);
 
         let mut sq = inner.uring.submission();
-        let _ = unsafe { sq.push(&entry) };
+        let _ = unsafe { sq.push(&entry.into()) };
     }
 
     fn inner_park(&self, timeout: Option<Duration>) -> io::Result<()> {
@@ -324,7 +375,7 @@ impl IoUringDriver {
     #[cfg(feature = "poll-io")]
     #[inline]
     pub(crate) fn register_poll_io(
-        this: &Rc<UnsafeCell<UringInner>>,
+        this: &Rc<UnsafeCell<UringInner<S, C>>>,
         source: &mut impl mio::event::Source,
         interest: mio::Interest,
     ) -> io::Result<usize> {
@@ -335,7 +386,7 @@ impl IoUringDriver {
     #[cfg(feature = "poll-io")]
     #[inline]
     pub(crate) fn deregister_poll_io(
-        this: &Rc<UnsafeCell<UringInner>>,
+        this: &Rc<UnsafeCell<UringInner<S, C>>>,
         source: &mut impl mio::event::Source,
         token: usize,
     ) -> io::Result<()> {
@@ -344,11 +395,14 @@ impl IoUringDriver {
     }
 }
 
-impl Driver for IoUringDriver {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> Driver
+    for IoUringDriver<S, C>
+where
+    IoUringDriver<S, C>: IntoInnerContext<S, C>,
+{
     /// Enter the driver context. This enables using uring types.
     fn with<R>(&self, f: impl FnOnce() -> R) -> R {
-        // TODO(ihciah): remove clone
-        let inner = Inner::Uring(self.inner.clone());
+        let inner = <IoUringDriver<S, C> as IntoInnerContext<S, C>>::get_context(&self.inner);
         CURRENT.set(&inner, f)
     }
 
@@ -376,11 +430,15 @@ impl Driver for IoUringDriver {
     }
 }
 
-impl UringInner {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> UringInner<S, C>
+where
+    IoUringDriver<S, C>: IntoInnerContext<S, C>,
+{
     fn tick(&mut self) -> io::Result<()> {
         let cq = self.uring.completion();
 
         for cqe in cq {
+            let cqe = cqe.into();
             let index = cqe.user_data();
             match index {
                 #[cfg(feature = "sync")]
@@ -421,7 +479,7 @@ impl UringInner {
         }
     }
 
-    fn new_op<T>(data: T, inner: &mut UringInner, driver: Inner) -> Op<T> {
+    fn new_op<T>(data: T, inner: &mut UringInner<S, C>, driver: Inner) -> Op<T> {
         Op {
             driver,
             index: inner.ops.insert(),
@@ -430,7 +488,7 @@ impl UringInner {
     }
 
     pub(crate) fn submit_with_data<T>(
-        this: &Rc<UnsafeCell<UringInner>>,
+        this: &Rc<UnsafeCell<UringInner<S, C>>>,
         data: T,
     ) -> io::Result<Op<T>>
     where
@@ -443,7 +501,8 @@ impl UringInner {
         }
 
         // Create the operation
-        let mut op = Self::new_op(data, inner, Inner::Uring(this.clone()));
+        let inner_ctx = <IoUringDriver<S, C> as IntoInnerContext<S, C>>::get_context(this);
+        let mut op = Self::new_op(data, inner, inner_ctx);
 
         // Configure the SQE
         let data_mut = unsafe { op.data.as_mut().unwrap_unchecked() };
@@ -453,7 +512,7 @@ impl UringInner {
             let mut sq = inner.uring.submission();
 
             // Push the new operation
-            if unsafe { sq.push(&sqe).is_err() } {
+            if unsafe { sq.push(&sqe.into()).is_err() } {
                 unimplemented!("when is this hit?");
             }
         }
@@ -471,7 +530,7 @@ impl UringInner {
     }
 
     pub(crate) fn poll_op(
-        this: &Rc<UnsafeCell<UringInner>>,
+        this: &Rc<UnsafeCell<UringInner<S, C>>>,
         index: usize,
         cx: &mut Context<'_>,
     ) -> Poll<CompletionMeta> {
@@ -506,7 +565,7 @@ impl UringInner {
     }
 
     pub(crate) fn drop_op<T: 'static>(
-        this: &Rc<UnsafeCell<UringInner>>,
+        this: &Rc<UnsafeCell<UringInner<S, C>>>,
         index: usize,
         data: &mut Option<T>,
     ) {
@@ -522,7 +581,8 @@ impl UringInner {
                 unsafe {
                     let cancel = opcode::AsyncCancel::new(index as u64)
                         .build()
-                        .user_data(u64::MAX);
+                        .user_data(u64::MAX)
+                        .into();
 
                     // Try push cancel, if failed, will submit and re-push.
                     if inner.uring.submission().push(&cancel).is_err() {
@@ -534,11 +594,12 @@ impl UringInner {
         }
     }
 
-    pub(crate) unsafe fn cancel_op(this: &Rc<UnsafeCell<UringInner>>, index: usize) {
+    pub(crate) unsafe fn cancel_op(this: &Rc<UnsafeCell<UringInner<S, C>>>, index: usize) {
         let inner = &mut *this.get();
         let cancel = opcode::AsyncCancel::new(index as u64)
             .build()
-            .user_data(u64::MAX);
+            .user_data(u64::MAX)
+            .into();
         if inner.uring.submission().push(&cancel).is_err() {
             let _ = inner.submit();
             let _ = inner.uring.submission().push(&cancel);
@@ -546,7 +607,7 @@ impl UringInner {
     }
 
     #[cfg(feature = "sync")]
-    pub(crate) fn unpark(this: &Rc<UnsafeCell<UringInner>>) -> waker::UnparkHandle {
+    pub(crate) fn unpark(this: &Rc<UnsafeCell<UringInner<S, C>>>) -> waker::UnparkHandle {
         let inner = unsafe { &*this.get() };
         let weak = std::sync::Arc::downgrade(&inner.shared_waker);
         waker::UnparkHandle(weak)
@@ -559,7 +620,9 @@ impl AsRawFd for IoUringDriver {
     }
 }
 
-impl Drop for IoUringDriver {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> Drop
+    for IoUringDriver<S, C>
+{
     fn drop(&mut self) {
         trace!("MONOIO DEBUG[IoUringDriver]: drop");
 
@@ -581,7 +644,7 @@ impl Drop for IoUringDriver {
     }
 }
 
-impl Drop for UringInner {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> Drop for UringInner<S, C> {
     fn drop(&mut self) {
         // no need to wait for completion, as the kernel will clean up the ring asynchronically.
         let _ = self.uring.submitter().submit();

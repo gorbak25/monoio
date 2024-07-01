@@ -235,7 +235,10 @@ impl TcpListener {
         crate::driver::CURRENT.with(|x| match x {
             // TODO: windows ioring support
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            crate::driver::Inner::Uring(_) => Ok(()),
+            crate::driver::Inner::Uring128_16(_) => Ok(()),
+            crate::driver::Inner::Uring128_32(_) => Ok(()),
+            crate::driver::Inner::Uring64_16(_) => Ok(()),
+            crate::driver::Inner::Uring64_32(_) => Ok(()),
             crate::driver::Inner::Legacy(_) => _socket.set_nonblocking(true),
         })
     }

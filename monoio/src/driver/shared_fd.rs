@@ -49,7 +49,22 @@ impl State {
             let reg = CURRENT
                 .with(|inner| match inner {
                     #[cfg(all(target_os = "linux", feature = "iouring"))]
-                    crate::driver::Inner::Uring(r) => super::IoUringDriver::register_poll_io(
+                    crate::driver::Inner::Uring128_16(r) => super::IoUringDriver::register_poll_io(
+                        r,
+                        &mut source,
+                        super::ready::RW_INTERESTS,
+                    ),
+                    crate::driver::Inner::Uring128_32(r) => super::IoUringDriver::register_poll_io(
+                        r,
+                        &mut source,
+                        super::ready::RW_INTERESTS,
+                    ),
+                    crate::driver::Inner::Uring64_16(r) => super::IoUringDriver::register_poll_io(
+                        r,
+                        &mut source,
+                        super::ready::RW_INTERESTS,
+                    ),
+                    crate::driver::Inner::Uring64_32(r) => super::IoUringDriver::register_poll_io(
                         r,
                         &mut source,
                         super::ready::RW_INTERESTS,
@@ -91,7 +106,19 @@ impl State {
         CURRENT
             .with(|inner| match inner {
                 #[cfg(all(target_os = "linux", feature = "iouring"))]
-                crate::driver::Inner::Uring(r) => {
+                crate::driver::Inner::Uring128_16(r) => {
+                    super::IoUringDriver::deregister_poll_io(r, &mut source, *token)
+                }
+                #[cfg(all(target_os = "linux", feature = "iouring"))]
+                crate::driver::Inner::Uring128_32(r) => {
+                    super::IoUringDriver::deregister_poll_io(r, &mut source, *token)
+                }
+                #[cfg(all(target_os = "linux", feature = "iouring"))]
+                crate::driver::Inner::Uring64_16(r) => {
+                    super::IoUringDriver::deregister_poll_io(r, &mut source, *token)
+                }
+                #[cfg(all(target_os = "linux", feature = "iouring"))]
+                crate::driver::Inner::Uring64_32(r) => {
                     super::IoUringDriver::deregister_poll_io(r, &mut source, *token)
                 }
                 #[cfg(feature = "legacy")]
@@ -162,6 +189,8 @@ impl SharedFd {
     #[cfg(unix)]
     #[allow(unreachable_code, unused)]
     pub(crate) fn new<const FORCE_LEGACY: bool>(fd: RawFd) -> io::Result<SharedFd> {
+        use crate::driver::uring::UringInner;
+
         enum Reg {
             Uring,
             #[cfg(feature = "poll-io")]
@@ -171,7 +200,55 @@ impl SharedFd {
 
         #[cfg(all(target_os = "linux", feature = "iouring", feature = "legacy"))]
         let state = match CURRENT.with(|inner| match inner {
-            super::Inner::Uring(inner) => match FORCE_LEGACY {
+            super::Inner::Uring128_16(inner) => match FORCE_LEGACY {
+                false => Reg::Uring,
+                true => {
+                    #[cfg(feature = "poll-io")]
+                    {
+                        let mut source = mio::unix::SourceFd(&fd);
+                        Reg::UringLegacy(super::IoUringDriver::register_poll_io(
+                            inner,
+                            &mut source,
+                            super::ready::RW_INTERESTS,
+                        ))
+                    }
+                    #[cfg(not(feature = "poll-io"))]
+                    Reg::Uring
+                }
+            },
+            super::Inner::Uring128_32(inner) => match FORCE_LEGACY {
+                false => Reg::Uring,
+                true => {
+                    #[cfg(feature = "poll-io")]
+                    {
+                        let mut source = mio::unix::SourceFd(&fd);
+                        Reg::UringLegacy(super::IoUringDriver::register_poll_io(
+                            inner,
+                            &mut source,
+                            super::ready::RW_INTERESTS,
+                        ))
+                    }
+                    #[cfg(not(feature = "poll-io"))]
+                    Reg::Uring
+                }
+            },
+            super::Inner::Uring64_16(inner) => match FORCE_LEGACY {
+                false => Reg::Uring,
+                true => {
+                    #[cfg(feature = "poll-io")]
+                    {
+                        let mut source = mio::unix::SourceFd(&fd);
+                        Reg::UringLegacy(super::IoUringDriver::register_poll_io(
+                            inner,
+                            &mut source,
+                            super::ready::RW_INTERESTS,
+                        ))
+                    }
+                    #[cfg(not(feature = "poll-io"))]
+                    Reg::Uring
+                }
+            },
+            super::Inner::Uring64_32(inner) => match FORCE_LEGACY {
                 false => Reg::Uring,
                 true => {
                     #[cfg(feature = "poll-io")]
@@ -271,7 +348,13 @@ impl SharedFd {
     pub(crate) fn new_without_register(fd: RawFd) -> SharedFd {
         let state = CURRENT.with(|inner| match inner {
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            super::Inner::Uring(_) => State::Uring(UringState::Init),
+            super::Inner::Uring128_16(_) => State::Uring(UringState::Init),
+            #[cfg(all(target_os = "linux", feature = "iouring"))]
+            super::Inner::Uring128_32(_) => State::Uring(UringState::Init),
+            #[cfg(all(target_os = "linux", feature = "iouring"))]
+            super::Inner::Uring64_16(_) => State::Uring(UringState::Init),
+            #[cfg(all(target_os = "linux", feature = "iouring"))]
+            super::Inner::Uring64_32(_) => State::Uring(UringState::Init),
             #[cfg(feature = "legacy")]
             super::Inner::Legacy(_) => State::Legacy(None),
             #[cfg(all(
@@ -349,7 +432,16 @@ impl SharedFd {
                         CURRENT.with(|inner| {
                             match inner {
                                 #[cfg(all(target_os = "linux", feature = "iouring"))]
-                                super::Inner::Uring(_) => {
+                                super::Inner::Uring128_16(_) => {
+                                    unreachable!("try_unwrap legacy fd with uring runtime")
+                                }
+                                super::Inner::Uring128_32(_) => {
+                                    unreachable!("try_unwrap legacy fd with uring runtime")
+                                }
+                                super::Inner::Uring64_16(_) => {
+                                    unreachable!("try_unwrap legacy fd with uring runtime")
+                                }
+                                super::Inner::Uring64_32(_) => {
                                     unreachable!("try_unwrap legacy fd with uring runtime")
                                 }
                                 super::Inner::Legacy(inner) => {
@@ -551,7 +643,16 @@ fn drop_legacy(mut fd: RawFd, idx: Option<usize>) {
             #[cfg(any(all(target_os = "linux", feature = "iouring"), feature = "legacy"))]
             match inner {
                 #[cfg(all(target_os = "linux", feature = "iouring"))]
-                super::Inner::Uring(_) => {
+                super::Inner::Uring128_16(_) => {
+                    unreachable!("close legacy fd with uring runtime")
+                }
+                super::Inner::Uring128_32(_) => {
+                    unreachable!("close legacy fd with uring runtime")
+                }
+                super::Inner::Uring64_16(_) => {
+                    unreachable!("close legacy fd with uring runtime")
+                }
+                super::Inner::Uring64_32(_) => {
                     unreachable!("close legacy fd with uring runtime")
                 }
                 super::Inner::Legacy(inner) => {
@@ -585,7 +686,31 @@ fn drop_uring_legacy(fd: RawFd, idx: Option<usize>) {
                     unreachable!("close uring fd with legacy runtime")
                 }
                 #[cfg(all(target_os = "linux", feature = "iouring"))]
-                super::Inner::Uring(inner) => {
+                super::Inner::Uring128_16(inner) => {
+                    // deregister it from driver(Poll and slab) and close fd
+                    if let Some(idx) = idx {
+                        let mut source = mio::unix::SourceFd(&fd);
+                        let _ = super::IoUringDriver::deregister_poll_io(inner, &mut source, idx);
+                    }
+                }
+                #[cfg(all(target_os = "linux", feature = "iouring"))]
+                super::Inner::Uring128_32(inner) => {
+                    // deregister it from driver(Poll and slab) and close fd
+                    if let Some(idx) = idx {
+                        let mut source = mio::unix::SourceFd(&fd);
+                        let _ = super::IoUringDriver::deregister_poll_io(inner, &mut source, idx);
+                    }
+                }
+                #[cfg(all(target_os = "linux", feature = "iouring"))]
+                super::Inner::Uring64_16(inner) => {
+                    // deregister it from driver(Poll and slab) and close fd
+                    if let Some(idx) = idx {
+                        let mut source = mio::unix::SourceFd(&fd);
+                        let _ = super::IoUringDriver::deregister_poll_io(inner, &mut source, idx);
+                    }
+                }
+                #[cfg(all(target_os = "linux", feature = "iouring"))]
+                super::Inner::Uring64_32(inner) => {
                     // deregister it from driver(Poll and slab) and close fd
                     if let Some(idx) = idx {
                         let mut source = mio::unix::SourceFd(&fd);
