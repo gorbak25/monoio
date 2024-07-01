@@ -498,6 +498,12 @@ impl File {
         self.fd.close().await;
         Ok(())
     }
+
+    /// Issues an ioctl via io_uring cmd passthrough
+    /// It's for implementing UBLK or NVME passthrough
+    pub async fn cmd<T: Copy + Sized + std::marker::Unpin + 'static>(self, cmd_op: u32, cmd: &T) -> io::Result<u32> {
+        Op::issue_cmd(&self.fd, cmd_op, cmd.clone()).unwrap().await.meta.result
+    }
 }
 
 #[cfg(unix)]

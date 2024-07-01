@@ -16,7 +16,6 @@ pub(crate) mod thread;
 mod legacy;
 #[cfg(all(target_os = "linux", feature = "iouring"))]
 mod uring;
-
 mod util;
 
 use std::{

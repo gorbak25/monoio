@@ -19,6 +19,9 @@ mod recv;
 mod send;
 mod write;
 
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+mod cmd_passthrough;
+
 #[cfg(all(target_os = "linux", feature = "splice"))]
 mod splice;
 
