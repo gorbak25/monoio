@@ -82,10 +82,14 @@ pub fn start<D, F>(future: F) -> F::Output
 where
     F: Future,
     F::Output: 'static,
-    D: Buildable + Driver,
+    D: Buildable<io_uring::squeue::Entry, io_uring::cqueue::Entry> + Driver,
 {
-    let mut rt = builder::Buildable::build(builder::RuntimeBuilder::<D>::new())
-        .expect("Unable to build runtime.");
+    let mut rt = builder::Buildable::build(builder::RuntimeBuilder::<
+        D,
+        io_uring::squeue::Entry,
+        io_uring::cqueue::Entry,
+    >::new())
+    .expect("Unable to build runtime.");
     rt.block_on(future)
 }
 

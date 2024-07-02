@@ -7,7 +7,7 @@ use crate::driver::LegacyDriver;
 #[cfg(any(feature = "legacy", feature = "iouring"))]
 use crate::utils::thread_id::gen_id;
 use crate::{
-    driver::Driver,
+    driver::{Driver, IntoInnerContext},
     time::{driver::TimeDriver, Clock},
     Runtime,
 };
@@ -15,12 +15,16 @@ use crate::{
 // ===== basic builder structure definition =====
 
 /// Runtime builder
-pub struct RuntimeBuilder<D> {
+pub struct RuntimeBuilder<
+    D,
+    S: io_uring::squeue::EntryMarker = io_uring::squeue::Entry,
+    C: io_uring::cqueue::EntryMarker = io_uring::cqueue::Entry,
+> {
     // iouring entries
     entries: Option<u32>,
 
     #[cfg(all(target_os = "linux", feature = "iouring"))]
-    urb: io_uring::Builder,
+    urb: io_uring::Builder<S, C>,
 
     // blocking handle
     #[cfg(feature = "sync")]
@@ -31,15 +35,19 @@ pub struct RuntimeBuilder<D> {
 
 scoped_thread_local!(pub(crate) static BUILD_THREAD_ID: usize);
 
-impl<T> Default for RuntimeBuilder<T> {
+impl<T, S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> Default
+    for RuntimeBuilder<T, S, C>
+{
     /// Create a default runtime builder
     #[must_use]
     fn default() -> Self {
-        RuntimeBuilder::<T>::new()
+        RuntimeBuilder::<T, S, C>::new()
     }
 }
 
-impl<T> RuntimeBuilder<T> {
+impl<T, S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker>
+    RuntimeBuilder<T, S, C>
+{
     /// Create a default runtime builder
     #[must_use]
     pub fn new() -> Self {
@@ -47,7 +55,7 @@ impl<T> RuntimeBuilder<T> {
             entries: None,
 
             #[cfg(all(target_os = "linux", feature = "iouring"))]
-            urb: io_uring::IoUring::builder(),
+            urb: io_uring::IoUring::<S, C>::builder(),
 
             #[cfg(feature = "sync")]
             blocking_handle: crate::blocking::BlockingStrategy::Panic.into(),
@@ -59,15 +67,21 @@ impl<T> RuntimeBuilder<T> {
 // ===== buildable trait and forward methods =====
 
 /// Buildable trait.
-pub trait Buildable: Sized {
+pub trait Buildable<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker>:
+    Sized
+{
     /// Build the runtime.
-    fn build(this: RuntimeBuilder<Self>) -> io::Result<Runtime<Self>>;
+    fn build(this: RuntimeBuilder<Self, S, C>) -> io::Result<Runtime<Self>>;
 }
 
 #[allow(unused)]
 macro_rules! direct_build {
     ($ty: ty) => {
-        impl RuntimeBuilder<$ty> {
+        impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker>
+            RuntimeBuilder<$ty, S, C>
+        where
+            $ty: Buildable<S, C>,
+        {
             /// Build the runtime.
             pub fn build(self) -> io::Result<Runtime<$ty>> {
                 Buildable::build(self)
@@ -77,9 +91,21 @@ macro_rules! direct_build {
 }
 
 #[cfg(all(target_os = "linux", feature = "iouring"))]
-direct_build!(IoUringDriver);
+direct_build!(IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry>);
 #[cfg(all(target_os = "linux", feature = "iouring"))]
-direct_build!(TimeDriver<IoUringDriver>);
+direct_build!(IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry32>);
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+direct_build!(IoUringDriver<io_uring::squeue::Entry128, io_uring::cqueue::Entry>);
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+direct_build!(IoUringDriver<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>);
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+direct_build!(TimeDriver<IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry>>);
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+direct_build!(TimeDriver<IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry32>>);
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+direct_build!(TimeDriver<IoUringDriver<io_uring::squeue::Entry128, io_uring::cqueue::Entry>>);
+#[cfg(all(target_os = "linux", feature = "iouring"))]
+direct_build!(TimeDriver<IoUringDriver<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>>);
 #[cfg(feature = "legacy")]
 direct_build!(LegacyDriver);
 #[cfg(feature = "legacy")]
@@ -88,8 +114,10 @@ direct_build!(TimeDriver<LegacyDriver>);
 // ===== builder impl =====
 
 #[cfg(feature = "legacy")]
-impl Buildable for LegacyDriver {
-    fn build(this: RuntimeBuilder<Self>) -> io::Result<Runtime<LegacyDriver>> {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> Buildable<S, C>
+    for LegacyDriver
+{
+    fn build(this: RuntimeBuilder<Self, S, C>) -> io::Result<Runtime<LegacyDriver>> {
         let thread_id = gen_id();
         #[cfg(feature = "sync")]
         let blocking_handle = this.blocking_handle;
@@ -109,8 +137,12 @@ impl Buildable for LegacyDriver {
 }
 
 #[cfg(all(target_os = "linux", feature = "iouring"))]
-impl Buildable for IoUringDriver {
-    fn build(this: RuntimeBuilder<Self>) -> io::Result<Runtime<IoUringDriver>> {
+impl<S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker> Buildable<S, C>
+    for IoUringDriver<S, C>
+where
+    IoUringDriver<S, C>: IntoInnerContext<S, C>,
+{
+    fn build(this: RuntimeBuilder<Self, S, C>) -> io::Result<Runtime<IoUringDriver<S, C>>> {
         let thread_id = gen_id();
         #[cfg(feature = "sync")]
         let blocking_handle = this.blocking_handle;
@@ -129,7 +161,9 @@ impl Buildable for IoUringDriver {
     }
 }
 
-impl<D> RuntimeBuilder<D> {
+impl<D, S: io_uring::squeue::EntryMarker, C: io_uring::cqueue::EntryMarker>
+    RuntimeBuilder<D, S, C>
+{
     const MIN_ENTRIES: u32 = 256;
 
     /// Set io_uring entries, min size is 256 and the default size is 1024.
@@ -151,7 +185,7 @@ impl<D> RuntimeBuilder<D> {
 
     #[cfg(all(target_os = "linux", feature = "iouring"))]
     #[must_use]
-    pub fn uring_builder(mut self, urb: io_uring::Builder) -> Self {
+    pub fn uring_builder(mut self, urb: io_uring::Builder<S, C>) -> Self {
         self.urb = urb;
         self
     }
@@ -164,12 +198,13 @@ impl<D> RuntimeBuilder<D> {
 pub struct FusionDriver;
 
 #[cfg(any(all(target_os = "linux", feature = "iouring"), feature = "legacy"))]
-impl RuntimeBuilder<FusionDriver> {
+impl RuntimeBuilder<FusionDriver, io_uring::squeue::Entry, io_uring::cqueue::Entry>
+{
     /// Build the runtime.
     #[cfg(all(target_os = "linux", feature = "iouring", feature = "legacy"))]
-    pub fn build(self) -> io::Result<crate::FusionRuntime<IoUringDriver, LegacyDriver>> {
+    pub fn build(self) -> io::Result<crate::FusionRuntime<IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry>, LegacyDriver>> {
         if crate::utils::detect_uring() {
-            let builder = RuntimeBuilder::<IoUringDriver> {
+            let builder = RuntimeBuilder::<IoUringDriver<io_uring::squeue::Entry, io_uring::cqueue::Entry>, io_uring::squeue::Entry, io_uring::cqueue::Entry> {
                 entries: self.entries,
                 urb: self.urb,
                 #[cfg(feature = "sync")]
@@ -179,7 +214,7 @@ impl RuntimeBuilder<FusionDriver> {
             info!("io_uring driver built");
             Ok(builder.build()?.into())
         } else {
-            let builder = RuntimeBuilder::<LegacyDriver> {
+            let builder = RuntimeBuilder::<LegacyDriver, io_uring::squeue::Entry, io_uring::cqueue::Entry> {
                 entries: self.entries,
                 urb: self.urb,
                 #[cfg(feature = "sync")]
@@ -218,14 +253,14 @@ impl RuntimeBuilder<FusionDriver> {
 }
 
 #[cfg(any(all(target_os = "linux", feature = "iouring"), feature = "legacy"))]
-impl RuntimeBuilder<TimeDriver<FusionDriver>> {
+impl RuntimeBuilder<TimeDriver<FusionDriver>, io_uring::squeue::Entry, io_uring::cqueue::Entry> {
     /// Build the runtime.
     #[cfg(all(target_os = "linux", feature = "iouring", feature = "legacy"))]
     pub fn build(
         self,
     ) -> io::Result<crate::FusionRuntime<TimeDriver<IoUringDriver>, TimeDriver<LegacyDriver>>> {
         if crate::utils::detect_uring() {
-            let builder = RuntimeBuilder::<TimeDriver<IoUringDriver>> {
+            let builder = RuntimeBuilder::<TimeDriver<IoUringDriver>, io_uring::squeue::Entry, io_uring::cqueue::Entry> {
                 entries: self.entries,
                 urb: self.urb,
                 #[cfg(feature = "sync")]
@@ -235,7 +270,7 @@ impl RuntimeBuilder<TimeDriver<FusionDriver>> {
             info!("io_uring driver with timer built");
             Ok(builder.build()?.into())
         } else {
-            let builder = RuntimeBuilder::<TimeDriver<LegacyDriver>> {
+            let builder = RuntimeBuilder::<TimeDriver<LegacyDriver>, io_uring::squeue::Entry, io_uring::cqueue::Entry> {
                 entries: self.entries,
                 urb: self.urb,
                 #[cfg(feature = "sync")]
@@ -285,9 +320,9 @@ impl time_wrap::TimeWrapable for LegacyDriver {}
 #[cfg(any(all(target_os = "linux", feature = "iouring"), feature = "legacy"))]
 impl time_wrap::TimeWrapable for FusionDriver {}
 
-impl<D: Driver> Buildable for TimeDriver<D>
+impl<D: Driver> Buildable<io_uring::squeue::Entry, io_uring::cqueue::Entry> for TimeDriver<D>
 where
-    D: Buildable,
+    D: Buildable<io_uring::squeue::Entry, io_uring::cqueue::Entry>,
 {
     /// Build the runtime
     fn build(this: RuntimeBuilder<Self>) -> io::Result<Runtime<TimeDriver<D>>> {

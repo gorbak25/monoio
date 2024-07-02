@@ -29,6 +29,8 @@ monoio = { path = "../monoio", default-features = false, features = [
 hyper = { version = "1.1", features = ["http1", "client", "server"] }
 http-body-util = "0.1"
 
+io-uring = "0.6.4"
+
 # For h2 examples
 bytes = { version = "1" }
 h2 = { version = "0.4" }

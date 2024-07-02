@@ -10,17 +10,11 @@ use std::{
     time::Duration,
 };
 
-use io_uring::{cqueue, opcode, squeue::EntryMarker, types::Timespec, IoUring};
+use io_uring::{cqueue, opcode, types::Timespec, IoUring};
 use lifecycle::Lifecycle;
 
 use super::{
-    op::{CompletionMeta, Op, OpAble},
-    // ready::Ready,
-    // scheduled_io::ScheduledIo,
-    util::timespec,
-    Driver,
-    Inner,
-    CURRENT,
+    op::{CompletionMeta, Op, OpAble}, util::timespec, Driver, Inner, IntoInnerContext, CURRENT
 };
 use crate::utils::slab::Slab;
 
@@ -57,14 +51,6 @@ pub struct IoUringDriver<
     // Used for drop
     #[cfg(feature = "sync")]
     thread_id: usize,
-}
-
-pub(crate) trait IntoInnerContext<
-    S: io_uring::squeue::EntryMarker,
-    C: io_uring::cqueue::EntryMarker,
->
-{
-    fn get_context(t: &Rc<UnsafeCell<UringInner<S, C>>>) -> Inner;
 }
 
 impl IntoInnerContext<io_uring::squeue::Entry, io_uring::cqueue::Entry>

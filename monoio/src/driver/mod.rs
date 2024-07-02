@@ -20,9 +20,7 @@ mod uring;
 mod util;
 
 use std::{
-    io,
-    task::{Context, Poll},
-    time::Duration,
+    cell::UnsafeCell, io, rc::Rc, task::{Context, Poll}, time::Duration
 };
 
 #[allow(unreachable_pub)]
@@ -97,6 +95,14 @@ pub(crate) enum Inner {
     Uring128_32(std::rc::Rc<std::cell::UnsafeCell<UringInner<io_uring::squeue::Entry128, io_uring::cqueue::Entry32>>>),
     #[cfg(feature = "legacy")]
     Legacy(std::rc::Rc<std::cell::UnsafeCell<LegacyInner>>),
+}
+
+pub(crate) trait IntoInnerContext<
+    S: io_uring::squeue::EntryMarker,
+    C: io_uring::cqueue::EntryMarker,
+>
+{
+    fn get_context(t: &Rc<UnsafeCell<UringInner<S, C>>>) -> Inner;
 }
 
 impl Inner {

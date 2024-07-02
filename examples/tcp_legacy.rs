@@ -14,7 +14,7 @@ fn main() {
 
 fn run<D>()
 where
-    D: Buildable + Driver,
+    D: Buildable<io_uring::squeue::Entry, io_uring::cqueue::Entry> + Driver,
 {
     const ADDRESS: &str = "127.0.0.1:50000";
 

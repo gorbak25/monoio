@@ -12,7 +12,7 @@ fn main() {
 #[cfg(target_os = "linux")]
 fn run<D>()
 where
-    D: monoio::Buildable + monoio::Driver,
+    D: monoio::Buildable<io_uring::squeue::Entry, io_uring::cqueue::Entry> + monoio::Driver,
 {
     use futures::channel::oneshot;
     use monoio::{
