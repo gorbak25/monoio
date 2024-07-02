@@ -14,7 +14,7 @@ use io_uring::{cqueue, opcode, types::Timespec, IoUring};
 use lifecycle::Lifecycle;
 
 use super::{
-    op::{CompletionMeta, Op, OpAble}, util::timespec, Driver, Inner, IntoInnerContext, CURRENT
+    op::{CompletionMeta, Op, OpAble, OpAbleUringSubmission}, util::timespec, Driver, Inner, IntoInnerContext, CURRENT
 };
 use crate::utils::slab::Slab;
 
@@ -479,6 +479,7 @@ where
     ) -> io::Result<Op<T>>
     where
         T: OpAble,
+        S: OpAbleUringSubmission<S>,
     {
         let inner = unsafe { &mut *this.get() };
         // If the submission queue is full, flush it to the kernel
@@ -492,13 +493,13 @@ where
 
         // Configure the SQE
         let data_mut = unsafe { op.data.as_mut().unwrap_unchecked() };
-        let sqe = OpAble::uring_op(data_mut).user_data(op.index as _);
 
+        let sqe = <S as OpAbleUringSubmission<S>>::to_squeue(data_mut, op.index as _);
         {
             let mut sq = inner.uring.submission();
 
             // Push the new operation
-            if unsafe { sq.push(&sqe.into()).is_err() } {
+            if unsafe { sq.push(&sqe).is_err() } {
                 unimplemented!("when is this hit?");
             }
         }

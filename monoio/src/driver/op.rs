@@ -53,10 +53,34 @@ pub(crate) trait OpAble {
     #[cfg(all(target_os = "linux", feature = "iouring"))]
     fn uring_op(&mut self) -> io_uring::squeue::Entry;
 
+    #[cfg(all(target_os = "linux", feature = "iouring"))]
+    fn uring_op_wide(&mut self) -> io_uring::squeue::Entry128 {
+        self.uring_op().into()
+    }
+
     #[cfg(any(feature = "legacy", feature = "poll-io"))]
     fn legacy_interest(&self) -> Option<(super::ready::Direction, usize)>;
     #[cfg(any(feature = "legacy", feature = "poll-io"))]
     fn legacy_call(&mut self) -> io::Result<u32>;
+}
+
+pub(crate) trait OpAbleUringSubmission<S: io_uring::squeue::EntryMarker> {
+    fn to_squeue<T>(op: &mut T, user_data: u64) -> S
+    where T: OpAble;
+}
+
+impl OpAbleUringSubmission<io_uring::squeue::Entry> for io_uring::squeue::Entry {
+    fn to_squeue<T>(op: &mut T, user_data: u64) -> io_uring::squeue::Entry
+    where T: OpAble {
+        op.uring_op().user_data(user_data)
+    }
+}
+
+impl OpAbleUringSubmission<io_uring::squeue::Entry128> for io_uring::squeue::Entry128 {
+    fn to_squeue<T>(op: &mut T, user_data: u64) -> io_uring::squeue::Entry128
+    where T: OpAble {
+        op.uring_op_wide().user_data(user_data)
+    }
 }
 
 /// If legacy is enabled and iouring is not, we can expose io interface in a poll-like way.
